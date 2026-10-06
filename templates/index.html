@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Patient Portal</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Patient Portal</p>
+          <h1>Appointment management</h1>
+        </div>
+        <form method="post" action="/set-role/patient" class="role-switcher">
+          <button class="role-button {% if role == 'patient' %}active{% endif %}" type="submit">Patient</button>
+        </form>
+        <form method="post" action="/set-role/provider" class="role-switcher">
+          <button class="role-button {% if role == 'provider' %}active{% endif %}" type="submit">Provider</button>
+        </form>
+      </header>
+
+      <div id="live-update-banner" class="live-update-banner" style="display:none"></div>
+      {% if role == 'provider' %}
+        <div id="provider-screen-status" class="provider-screen-status" role="status" aria-live="polite">
+          <span id="provider-screen-status-text">Checking provider screen access...</span>
+          <button id="provider-screen-activate" type="button" hidden>Make this screen active</button>
+        </div>
+        <div id="provider-screen-dialog" class="provider-screen-dialog" role="dialog" aria-modal="true" aria-labelledby="provider-screen-dialog-title" hidden>
+          <div class="provider-screen-dialog-panel">
+            <h2 id="provider-screen-dialog-title">Another provider screen is active</h2>
+            <p id="provider-screen-dialog-message">Choose whether this screen or the other screen should control provider actions.</p>
+            <div class="provider-screen-dialog-actions">
+              <button id="provider-screen-takeover" class="primary-button" type="button">Make this screen active</button>
+              <button id="provider-screen-keep" class="secondary-button" type="button">Keep the other screen active</button>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          <div class="flash-list">
+            {% for message in messages %}
+              <div class="flash-message">{{ message }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+
+      <main class="content-grid">
+        <section class="panel appointments-panel">
+          <div class="panel-header">
+            <h2>{{ 'Patient' if role == 'patient' else 'Provider' }} view</h2>
+          </div>
+
+          {% if role == 'patient' %}
+            <form class="request-form" method="post" action="/appointments/request">
+              <h3>Request an appointment</h3>
+              <div class="field-row">
+                <label>
+                  <span>Date</span>
+                  <input type="date" name="appointment_date" required>
+                </label>
+                <label>
+                  <span>Time</span>
+                  <input type="time" name="appointment_time" required>
+                </label>
+              </div>
+              <div class="field-row inline-fields">
+                <label>
+                  <span>Type</span>
+                  <input type="text" name="appointment_type" value="Follow-up" required>
+                </label>
+              </div>
+              <label>
+                <span>Reason</span>
+                <textarea name="reason" rows="3" required></textarea>
+              </label>
+              <button class="primary-button" type="submit">Submit request</button>
+            </form>
+          {% else %}
+            <div class="provider-note">
+              Provider tools are enabled. Confirm pending appointments, reschedule timelines, and protect against overlaps.
+            </div>
+          {% endif %}
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Provider</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Reason</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for appointment in appointments %}
+                  <tr>
+                    <td>{{ appointment.scheduled_for }}</td>
+                    <td>{{ appointment.provider_name }}</td>
+                    <td>{{ appointment.appointment_type }}</td>
+                    <td><span class="status status-{{ appointment.status }}">{{ appointment.status }}</span></td>
+                    <td>{{ appointment.reason }}</td>
+                    <td>
+                      {% if role == 'patient' %}
+                        {% if appointment.status == 'confirmed' %}
+                          <form method="post" action="/appointments/{{ appointment.id }}/cancel">
+                            <input type="hidden" name="expected_version" value="{{ appointment.version }}">
+                            <button class="danger-button" type="submit">Cancel</button>
+                          </form>
+                        {% else %}
+                          <span class="muted">Not cancelable</span>
+                        {% endif %}
+                      {% else %}
+                        {% if appointment.status == 'pending' %}
+                          <div class="provider-actions">
+                            <form method="post" action="/appointments/{{ appointment.id }}/confirm" class="provider-action-form" data-provider-action>
+                              <input type="hidden" name="expected_version" value="{{ appointment.version }}">
+                              <input type="hidden" name="provider_screen_token" value="">
+                              <button class="primary-button" type="submit" disabled>Confirm</button>
+                            </form>
+                          </div>
+                        {% endif %}
+                        <form method="post" action="/appointments/{{ appointment.id }}/reschedule" class="reschedule-form provider-action-form" data-provider-action>
+                          <input type="hidden" name="expected_version" value="{{ appointment.version }}">
+                          <input type="hidden" name="provider_screen_token" value="">
+                          <input type="date" name="appointment_date" value="{{ appointment.scheduled_for[:10] }}" required disabled>
+                          <input type="time" name="appointment_time" value="{{ appointment.scheduled_for[11:16] }}" required disabled>
+                          <button class="secondary-button" type="submit" disabled>Reschedule</button>
+                        </form>
+                      {% endif %}
+                    </td>
+                  </tr>
+                  <tr class="history-row">
+                    <td colspan="6">
+                      {% set appointment_history = history_by_appointment.get(appointment.id, []) %}
+                      <details class="appointment-history" data-appointment-id="{{ appointment.id }}">
+                        <summary>Change history ({{ appointment_history|length }})</summary>
+                        {% if appointment_history %}
+                          <ol class="audit-timeline">
+                            {% for item in appointment_history %}
+                              <li>
+                                <div class="audit-heading">
+                                  <strong>{{ item.event_name|replace('_', ' ')|title }}</strong>
+                                  <span>{{ item.actor_name }} ({{ item.actor_role|title }})</span>
+                                  <time datetime="{{ item.created_at }}">{{ item.created_at }}</time>
+                                </div>
+                                <p class="audit-changed-fields">
+                                  <strong>Changed:</strong>
+                                  {{ item.changed_fields|replace(',', ', ')|replace('_', ' ')|title }}
+                                </p>
+                                {% if item.old_value %}
+                                  <div class="audit-values">
+                                    <div>
+                                      <strong>Before</strong>
+                                      <dl>
+                                        {% for field, value in item.old_value.items() %}
+                                          <dt>{{ field|replace('_', ' ')|title }}</dt>
+                                          <dd>{{ value }}</dd>
+                                        {% endfor %}
+                                      </dl>
+                                    </div>
+                                    <div>
+                                      <strong>After</strong>
+                                      <dl>
+                                        {% for field, value in item.new_value.items() %}
+                                          <dt>{{ field|replace('_', ' ')|title }}</dt>
+                                          <dd>{{ value }}</dd>
+                                        {% endfor %}
+                                      </dl>
+                                    </div>
+                                  </div>
+                                {% elif item.new_value %}
+                                  <div class="audit-values">
+                                    <div>
+                                      <strong>Initial values</strong>
+                                      <dl>
+                                        {% for field, value in item.new_value.items() %}
+                                          <dt>{{ field|replace('_', ' ')|title }}</dt>
+                                          <dd>{{ value }}</dd>
+                                        {% endfor %}
+                                      </dl>
+                                    </div>
+                                  </div>
+                                {% endif %}
+                              </li>
+                            {% endfor %}
+                          </ol>
+                        {% else %}
+                          <p class="muted">No changes recorded.</p>
+                        {% endif %}
+                      </details>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <aside class="panel side-panel">
+          <div class="side-section">
+            <h3>Notifications ({{ notifications|length }})</h3>
+            <ul class="log-list">
+              {% for item in notifications %}
+                <li>
+                  <strong>{{ item.channel|title }} | {{ item.status|title }}</strong>
+                  <small>Appointment #{{ item.appointment_id }} | {{ item.created_at }}</small>
+                  <p class="notification-message">{{ item.message }}</p>
+                </li>
+              {% endfor %}
+            </ul>
+          </div>
+        </aside>
+      </main>
+    </div>
+    <script>
+      const providerView = {{ (role == 'provider')|tojson }};
+
+      if (providerView) {
+        const statusText = document.getElementById('provider-screen-status-text');
+        const activateButton = document.getElementById('provider-screen-activate');
+        const dialog = document.getElementById('provider-screen-dialog');
+        const dialogMessage = document.getElementById('provider-screen-dialog-message');
+        const takeoverButton = document.getElementById('provider-screen-takeover');
+        const keepButton = document.getElementById('provider-screen-keep');
+        const actionForms = document.querySelectorAll('[data-provider-action]');
+        const makeId = function () {
+          return window.crypto && window.crypto.randomUUID
+            ? window.crypto.randomUUID()
+            : Date.now().toString(36) + Math.random().toString(36).slice(2);
+        };
+        let screenToken = sessionStorage.getItem('providerScreenToken') || makeId();
+        let screenTabId = sessionStorage.getItem('providerScreenTabId') || makeId();
+        const pageInstanceId = makeId();
+        let ownsProviderScreen = false;
+        sessionStorage.setItem('providerScreenToken', screenToken);
+        sessionStorage.setItem('providerScreenTabId', screenTabId);
+
+        const tabChannel = 'BroadcastChannel' in window
+          ? new BroadcastChannel('patient-portal-provider-screen')
+          : null;
+        if (tabChannel) {
+          tabChannel.onmessage = function (event) {
+            const message = event.data || {};
+            if (message.type === 'hello' && message.tabId === screenTabId && message.instanceId !== pageInstanceId) {
+              tabChannel.postMessage({ type: 'occupied', to: message.instanceId });
+            }
+            if (message.type === 'occupied' && message.to === pageInstanceId) {
+              screenToken = makeId();
+              screenTabId = makeId();
+              sessionStorage.setItem('providerScreenToken', screenToken);
+              sessionStorage.setItem('providerScreenTabId', screenTabId);
+            }
+          };
+          tabChannel.postMessage({ type: 'hello', tabId: screenTabId, instanceId: pageInstanceId });
+        }
+
+        function setProviderAccess(active, message) {
+          ownsProviderScreen = active;
+          statusText.textContent = message;
+          activateButton.hidden = active;
+          actionForms.forEach(function (form) {
+            form.querySelectorAll('input:not([type="hidden"]), button, select, textarea').forEach(function (control) {
+              control.disabled = !active;
+            });
+            form.querySelector('input[name="provider_screen_token"]').value = active ? screenToken : '';
+          });
+        }
+
+        function openChoiceDialog(message) {
+          dialogMessage.textContent = message;
+          dialog.hidden = false;
+        }
+
+        async function sendScreenRequest(path, body) {
+          const response = await fetch(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (!response.ok) {
+            throw new Error('Could not verify provider screen ownership.');
+          }
+          return response.json();
+        }
+
+        async function claimScreen(takeover) {
+          activateButton.disabled = true;
+          try {
+            const result = await sendScreenRequest('/api/provider-screen/claim', {
+              token: screenToken,
+              takeover: takeover,
+            });
+            if (result.active) {
+              dialog.hidden = true;
+              setProviderAccess(true, 'This is the active provider screen.');
+            } else {
+              setProviderAccess(false, 'Provider actions are disabled on this screen.');
+              openChoiceDialog('Another provider screen is active. Choose whether this screen or the other screen should control provider actions.');
+            }
+          } catch (error) {
+            setProviderAccess(false, 'Provider actions are disabled until screen ownership can be verified.');
+            openChoiceDialog('The active provider screen could not be verified. Retry or keep this screen read-only.');
+          } finally {
+            activateButton.disabled = false;
+          }
+        }
+
+        takeoverButton.addEventListener('click', function () { claimScreen(true); });
+        keepButton.addEventListener('click', function () { dialog.hidden = true; });
+        activateButton.addEventListener('click', function () { claimScreen(false); });
+
+        window.setTimeout(function () { claimScreen(false); }, tabChannel ? 150 : 0);
+        window.setInterval(async function () {
+          if (!ownsProviderScreen) {
+            return;
+          }
+          try {
+            const result = await sendScreenRequest('/api/provider-screen/heartbeat', { token: screenToken });
+            if (!result.active) {
+              setProviderAccess(false, 'Another provider screen became active. This screen is now read-only.');
+              openChoiceDialog('Your provider screen is no longer active. You can take over or keep the other screen active.');
+            }
+          } catch (error) {
+            setProviderAccess(false, 'Provider actions are disabled because screen ownership could not be verified.');
+          }
+        }, 5000);
+      }
+
+      const liveBanner = document.getElementById('live-update-banner');
+      const latestSeenUpdate = {{ (latest_updated_at or '')|tojson }};
+
+      function showLiveBanner(message) {
+        if (!liveBanner) {
+          return;
+        }
+        liveBanner.classList.remove('flash-highlight');
+        liveBanner.textContent = message + ' Reloading the latest record...';
+        liveBanner.style.display = 'block';
+        requestAnimationFrame(function () {
+          liveBanner.classList.add('flash-highlight');
+        });
+      }
+
+      function triggerRefresh(message) {
+        showLiveBanner(message);
+        setTimeout(function () {
+          window.location.reload();
+        }, 700);
+      }
+
+      if (typeof io !== 'undefined') {
+        const socket = io();
+        socket.on('appointment_changed', function (payload) {
+          if (!payload || !payload.message) {
+            return;
+          }
+          triggerRefresh(payload.message);
+        });
+      }
+
+      setInterval(function () {
+        fetch('/api/appointments')
+          .then(function (response) {
+            return response.json();
+          })
+          .then(function (data) {
+            if (!data || !data.latest_updated_at) {
+              return;
+            }
+            if (data.latest_updated_at !== latestSeenUpdate) {
+              triggerRefresh('Record changed in another screen.');
+            }
+          })
+          .catch(function () {
+            // Ignore polling errors and retry silently.
+          });
+      }, 3000);
+    </script>
+  </body>
+</html>
